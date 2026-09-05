@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Search, 
@@ -14,7 +14,13 @@ import {
   Lightbulb,
   CheckCircle2,
   AlertCircle,
-  Sparkles
+  Sparkles,
+  Swords,
+  BookOpen,
+  HelpCircle,
+  TrendingUp,
+  FileDown,
+  Network
 } from 'lucide-react';
 import { 
   Radar, 
@@ -35,7 +41,15 @@ import {
 } from 'recharts';
 import { cn } from './lib/utils';
 import { analyzeSEO } from './services/geminiService';
-import { SEOAnalysis, AppState } from './types';
+import { SEOAnalysis, AppState, CompetitorAudit } from './types';
+import { HistoricalSparkline } from './components/HistoricalSparkline';
+import { CompetitorGapChecker } from './components/CompetitorGapChecker';
+import { MethodologyGuideModal } from './components/MethodologyGuideModal';
+import { EntityGraphVisualizer } from './components/EntityGraphVisualizer';
+import { SERPOpportunityMatrix } from './components/SERPOpportunityMatrix';
+import { exportSEOAnalysisToPDF } from './services/pdfExportService';
+import { QuickTipsPopover } from './components/QuickTipsPopover';
+import { NavTooltip } from './components/NavTooltip';
 
 // --- Components ---
 
@@ -108,14 +122,20 @@ const Badge = ({ children, className }: { children: React.ReactNode; className?:
 
 export default function App() {
   const [state, setState] = useState<AppState>('landing');
-  const [activeTab, setActiveTab] = useState<'map' | 'landscape' | 'blueprint'>('map');
+  const [activeTab, setActiveTab] = useState<'map' | 'entityGraph' | 'serp' | 'landscape' | 'competitor' | 'blueprint'>('map');
   const [selectedGapIndex, setSelectedGapIndex] = useState<number | null>(null);
   const [keyword, setKeyword] = useState('');
   const [context, setContext] = useState('');
+  const [competitor, setCompetitor] = useState('');
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [analysis, setAnalysis] = useState<SEOAnalysis | null>(null);
   const [savedAnalyses, setSavedAnalyses] = useState<SEOAnalysis[]>([]);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [gapTypeFilter, setGapTypeFilter] = useState<string>('All');
+  const [pdfNotification, setPdfNotification] = useState<string | null>(null);
+  const radarChartRef = useRef<HTMLDivElement>(null);
 
   // Load history on mount
   useEffect(() => {
@@ -134,19 +154,24 @@ export default function App() {
     localStorage.setItem('nexus_seo_history', JSON.stringify(savedAnalyses));
   }, [savedAnalyses]);
 
-  const handleAnalyze = async (manualKeyword?: string | React.MouseEvent | React.KeyboardEvent) => {
+  const handleAnalyze = async (
+    manualKeyword?: string | React.MouseEvent | React.KeyboardEvent,
+    manualCompetitor?: string
+  ) => {
     const targetKeyword = typeof manualKeyword === 'string' ? manualKeyword : keyword;
     if (!targetKeyword || typeof targetKeyword !== 'string' || !targetKeyword.trim()) return;
     
+    const targetCompetitor = typeof manualCompetitor === 'string' ? manualCompetitor : competitor;
     setKeyword(targetKeyword); // Sync for related keyword clicks
     setState('analyzing');
     setError(null);
     try {
-      const result = await analyzeSEO(targetKeyword, context);
+      const result = await analyzeSEO(targetKeyword, context, targetCompetitor.trim() || undefined);
       const enrichedResult: SEOAnalysis = {
         ...result,
         id: crypto.randomUUID(),
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        competitor: targetCompetitor.trim() || undefined
       };
       setAnalysis(enrichedResult);
       setSavedAnalyses(prev => [enrichedResult, ...prev]);
@@ -158,6 +183,17 @@ export default function App() {
       setError('Failed to synthesize resonance. Please verify connectivity.');
       setState('landing');
     }
+  };
+
+  const handleCompetitorAuditUpdated = (updatedAudit: CompetitorAudit) => {
+    if (!analysis) return;
+    const updatedAnalysis: SEOAnalysis = {
+      ...analysis,
+      competitor: updatedAudit.competitorDomain,
+      competitorAudit: updatedAudit
+    };
+    setAnalysis(updatedAnalysis);
+    setSavedAnalyses(prev => prev.map(a => a.id === updatedAnalysis.id ? updatedAnalysis : a));
   };
 
   const exportReport = (format: 'json' | 'text') => {
@@ -182,6 +218,25 @@ export default function App() {
     a.href = url;
     a.download = `nexus_report_${analysis.id.substring(0,8)}.${format === 'json' ? 'json' : 'txt'}`;
     a.click();
+  };
+
+  const handleExportPDF = async (targetAnalysis?: SEOAnalysis) => {
+    const reportToExport = targetAnalysis || analysis;
+    if (!reportToExport) return;
+    setIsGeneratingPdf(true);
+    setError(null);
+    try {
+      await exportSEOAnalysisToPDF(reportToExport, {
+        chartElement: radarChartRef.current
+      });
+      setPdfNotification(`PDF exported: "${reportToExport.keyword}"`);
+      setTimeout(() => setPdfNotification(null), 4000);
+    } catch (err) {
+      console.error("Failed to export PDF", err);
+      setError("PDF Generation failed. Please try again.");
+    } finally {
+      setIsGeneratingPdf(false);
+    }
   };
 
   const deleteAnalysis = (id: string, e: React.MouseEvent) => {
@@ -295,9 +350,17 @@ export default function App() {
                 <div className="w-4 h-4 bg-[#C5FF4A] rounded-full" />
                 <span className="text-xs tracking-[0.3em] font-bold uppercase">NexusSEO</span>
               </div>
-              <div className="flex gap-4 md:gap-8 text-[10px] uppercase tracking-widest font-bold opacity-40">
-                <button onClick={() => setState('history')} className="hover:opacity-100 transition-opacity uppercase tracking-[0.2em] text-[10px] font-bold">Archives ({savedAnalyses.length})</button>
-                <a href="#" className="hidden sm:block hover:opacity-100 transition-opacity">Methodology</a>
+              <div className="flex items-center gap-4 md:gap-8 text-[10px] uppercase tracking-widest font-bold opacity-70">
+                <button onClick={() => setState('history')} className="hover:opacity-100 transition-opacity uppercase tracking-[0.2em] text-[10px] font-bold cursor-pointer">
+                  Archives ({savedAnalyses.length})
+                </button>
+                <button 
+                  onClick={() => setIsGuideOpen(true)} 
+                  className="hover:opacity-100 transition-opacity uppercase tracking-[0.2em] text-[10px] font-bold flex items-center gap-1.5 cursor-pointer text-[#C5FF4A]"
+                >
+                  <BookOpen size={12} />
+                  <span>Methodology & Guide</span>
+                </button>
               </div>
             </header>
 
@@ -321,24 +384,56 @@ export default function App() {
                       className="w-full bg-transparent p-8 text-xl font-serif italic focus:outline-none placeholder:opacity-20"
                       value={keyword}
                       onChange={(e) => setKeyword(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && keyword.trim() && handleAnalyze()}
                     />
                   </div>
                   <div className="md:col-span-4 self-center p-4">
-                    <Button className="w-full" onClick={handleAnalyze} disabled={!keyword.trim()}>
+                    <Button className="w-full cursor-pointer" onClick={() => handleAnalyze()} disabled={!keyword.trim()}>
                       SYNTHESIZE
                     </Button>
                   </div>
                 </div>
-                
-                <div className="mt-8 relative border-t border-[#F5F5F0]/20 py-8">
-                  <label className="absolute -top-3 left-0 bg-[#0A0A0A] px-2 text-[9px] uppercase tracking-widest opacity-40">Environmental Context</label>
-                  <textarea 
-                    placeholder="OPTIONAL: INPUT EXISTING NARRATIVE ARCHITECTURE..."
-                    rows={2}
-                    className="w-full bg-transparent px-2 text-xs opacity-50 focus:outline-none focus:opacity-100 transition-opacity uppercase tracking-widest font-light resize-none"
-                    value={context}
-                    onChange={(e) => setContext(e.target.value)}
-                  />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 pt-6 border-t border-[#F5F5F0]/20">
+                  <div className="relative">
+                    <label className="absolute -top-3 left-0 bg-[#0A0A0A] px-2 text-[9px] uppercase tracking-widest opacity-40">
+                      Rival Benchmark (Optional)
+                    </label>
+                    <input 
+                      type="text"
+                      placeholder="COMPETITOR DOMAIN (e.g. rival.com)..."
+                      value={competitor}
+                      onChange={(e) => setCompetitor(e.target.value)}
+                      className="w-full bg-transparent px-2 py-2 text-xs opacity-60 focus:opacity-100 transition-opacity uppercase tracking-wider font-mono focus:outline-none border-b border-[#F5F5F0]/10 focus:border-[#C5FF4A]"
+                    />
+                  </div>
+
+                  <div className="relative">
+                    <label className="absolute -top-3 left-0 bg-[#0A0A0A] px-2 text-[9px] uppercase tracking-widest opacity-40">
+                      Environmental Context (Optional)
+                    </label>
+                    <textarea 
+                      placeholder="PASTE EXISTING CONTENT OR ANGLE..."
+                      rows={1}
+                      className="w-full bg-transparent px-2 py-2 text-xs opacity-60 focus:opacity-100 transition-opacity uppercase tracking-wider font-light resize-none focus:outline-none border-b border-[#F5F5F0]/10 focus:border-[#C5FF4A]"
+                      value={context}
+                      onChange={(e) => setContext(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mt-6 pt-4 border-t border-[#F5F5F0]/10 text-[9px] font-mono opacity-50 uppercase tracking-widest">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#C5FF4A]" />
+                    Information Gain Patent US10698958B2
+                  </span>
+                  <button 
+                    onClick={() => setIsGuideOpen(true)} 
+                    className="text-[#C5FF4A] hover:underline flex items-center gap-1 cursor-pointer font-bold"
+                  >
+                    <HelpCircle size={11} />
+                    <span>How it works & methodology</span>
+                  </button>
                 </div>
 
                 {error && (
@@ -425,7 +520,14 @@ export default function App() {
                 <div className="w-4 h-4 bg-[#C5FF4A] rounded-full" />
                 <span className="text-xs tracking-[0.3em] font-bold uppercase">NexusSEO Archives</span>
               </div>
-              <div className="flex gap-4">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setIsGuideOpen(true)}
+                  className="text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 text-[#C5FF4A] border border-[#C5FF4A]/30 px-3 py-1.5 hover:bg-[#C5FF4A]/10 transition-all cursor-pointer"
+                >
+                  <BookOpen size={12} />
+                  <span className="hidden sm:inline">Methodology Guide</span>
+                </button>
                 {compareIds.length === 2 && (
                   <Button variant="primary" className="text-[10px]" onClick={() => setState('compare')}>
                     DIFF_COMPARE ({compareIds.length})
@@ -454,14 +556,25 @@ export default function App() {
                      >
                        <div className="flex justify-between items-start mb-6">
                          <span className="text-[9px] font-mono opacity-40">{new Date(a.timestamp).toLocaleDateString()}</span>
-                         <div className="flex gap-2">
+                         <div className="flex items-center gap-2">
+                           <button 
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               handleExportPDF(a);
+                             }}
+                             title="Export PDF Document"
+                             className="text-[9px] uppercase tracking-tighter font-bold opacity-40 hover:opacity-100 hover:text-[#C5FF4A] flex items-center gap-1 cursor-pointer transition-colors"
+                           >
+                             <FileDown size={11} />
+                             <span className="hidden sm:inline">PDF</span>
+                           </button>
                            <button 
                              onClick={(e) => toggleCompare(a.id, e)}
-                             className={cn("text-[9px] uppercase tracking-tighter font-bold", compareIds.includes(a.id) ? "text-[#C5FF4A]" : "opacity-30 border-b border-transparent hover:border-white")}
+                             className={cn("text-[9px] uppercase tracking-tighter font-bold cursor-pointer", compareIds.includes(a.id) ? "text-[#C5FF4A]" : "opacity-30 border-b border-transparent hover:border-white")}
                            >
                              {compareIds.includes(a.id) ? 'READY' : 'COMPARE'}
                            </button>
-                           <button onClick={(e) => deleteAnalysis(a.id, e)} className="opacity-30 hover:opacity-100 hover:text-red-400">
+                           <button onClick={(e) => deleteAnalysis(a.id, e)} className="opacity-30 hover:opacity-100 hover:text-red-400 cursor-pointer">
                              <AlertCircle size={12} />
                            </button>
                          </div>
@@ -495,7 +608,16 @@ export default function App() {
                 <div className="w-4 h-4 bg-[#C5FF4A] rounded-full" />
                 <span className="text-xs tracking-[0.3em] font-bold uppercase">NexusSEO Diff_Tool</span>
               </div>
-              <Button variant="outline" className="text-[10px]" onClick={() => setState('history')}>BACK_TO_ARCHIVES</Button>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setIsGuideOpen(true)}
+                  className="text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 text-[#C5FF4A] border border-[#C5FF4A]/30 px-3 py-1.5 hover:bg-[#C5FF4A]/10 transition-all cursor-pointer"
+                >
+                  <BookOpen size={12} />
+                  <span className="hidden sm:inline">Methodology Guide</span>
+                </button>
+                <Button variant="outline" className="text-[10px] cursor-pointer" onClick={() => setState('history')}>BACK_TO_ARCHIVES</Button>
+              </div>
             </header>
             <main className="flex-1 p-12 max-w-7xl mx-auto w-full">
                <div className="mb-12 flex justify-between items-end">
@@ -541,6 +663,21 @@ export default function App() {
                     </div>
                   </section>
 
+                  {/* Historical Sparkline Evolution */}
+                  <section className="space-y-1">
+                    <HistoricalSparkline 
+                      currentKeyword={analysis.keyword}
+                      currentScore={analysis.informationGainPotential}
+                      currentAnalysisId={analysis.id}
+                      savedAnalyses={savedAnalyses}
+                      onSelectHistorical={(historical) => {
+                        setAnalysis(historical);
+                        setSelectedGapIndex(null);
+                      }}
+                      onReAudit={() => handleAnalyze(analysis.keyword, analysis.competitor)}
+                    />
+                  </section>
+
                   <section className="p-4 border border-[#F5F5F0]/10 bg-zinc-950/50">
                     <label className="text-[9px] uppercase tracking-widest opacity-30 block mb-2">Strategy</label>
                     <p className="text-[10px] lg:text-[11px] leading-relaxed opacity-70 italic">
@@ -559,7 +696,7 @@ export default function App() {
                          <button 
                            key={i} 
                            onClick={() => handleAnalyze(kw)}
-                           className="text-[9px] uppercase tracking-widest border border-[#F5F5F0]/10 px-3 py-1.5 hover:border-[#C5FF4A] hover:text-[#C5FF4A] transition-all bg-zinc-950/30"
+                           className="text-[9px] uppercase tracking-widest border border-[#F5F5F0]/10 px-3 py-1.5 hover:border-[#C5FF4A] hover:text-[#C5FF4A] transition-all bg-zinc-950/30 cursor-pointer"
                          >
                            {kw}
                          </button>
@@ -569,46 +706,94 @@ export default function App() {
 
                   <section className="space-y-2 pb-6 lg:pb-0">
                      <label className="text-[10px] uppercase tracking-widest opacity-50 block mb-3 md:mb-4">Export Result</label>
-                     <div className="grid grid-cols-2 gap-2">
-                        <button onClick={() => exportReport('json')} className="py-2 border border-[#F5F5F0]/20 text-[10px] font-bold uppercase hover:bg-white hover:text-black transition-all">JSON</button>
-                        <button onClick={() => exportReport('text')} className="py-2 border border-[#F5F5F0]/20 text-[10px] font-bold uppercase hover:bg-white hover:text-black transition-all">TEXT</button>
+                     <div className="space-y-2">
+                        <button 
+                          onClick={() => handleExportPDF()} 
+                          disabled={isGeneratingPdf}
+                          className="w-full py-2.5 bg-[#C5FF4A] text-black font-bold text-[10px] uppercase tracking-widest hover:bg-white transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          {isGeneratingPdf ? <Loader2 size={13} className="animate-spin" /> : <FileDown size={13} />}
+                          <span>{isGeneratingPdf ? 'GENERATING PDF...' : 'EXPORT FULL PDF REPORT'}</span>
+                        </button>
+                        <div className="grid grid-cols-2 gap-2">
+                           <button onClick={() => exportReport('json')} className="py-2 border border-[#F5F5F0]/20 text-[10px] font-bold uppercase hover:bg-white hover:text-black transition-all cursor-pointer">JSON</button>
+                           <button onClick={() => exportReport('text')} className="py-2 border border-[#F5F5F0]/20 text-[10px] font-bold uppercase hover:bg-white hover:text-black transition-all cursor-pointer">TEXT</button>
+                        </div>
                      </div>
+                     {pdfNotification && (
+                       <motion.div 
+                         initial={{ opacity: 0, y: 4 }}
+                         animate={{ opacity: 1, y: 0 }}
+                         className="p-2 bg-[#C5FF4A]/10 border border-[#C5FF4A]/30 text-[9px] font-mono text-[#C5FF4A] text-center"
+                       >
+                         {pdfNotification}
+                       </motion.div>
+                     )}
                   </section>
                 </div>
               </div>
 
               <div className="space-y-3 lg:space-y-4 mt-8 lg:mt-0">
-                <Button variant="secondary" className="w-full text-[10px] lg:text-xs" onClick={() => setState('history')}>
+                <Button variant="secondary" className="w-full text-[10px] lg:text-xs cursor-pointer" onClick={() => setState('history')}>
                   VIEW ARCHIVES
                 </Button>
-                <Button variant="outline" className="w-full text-[10px] lg:text-xs" onClick={() => setState('landing')}>
+                <Button variant="outline" className="w-full text-[10px] lg:text-xs cursor-pointer" onClick={() => setState('landing')}>
                   NEW AUDIT
                 </Button>
               </div>
             </aside>
 
             {/* Main Content Area */}
-            <main className="flex-1 flex flex-col overflow-y-auto">
-              <header className="h-20 border-b border-[#F5F5F0]/10 flex items-center justify-between px-6 lg:px-10 shrink-0">
-                <div className="flex gap-4 md:gap-8 h-full overflow-x-auto no-scrollbar">
+            <main className="flex-1 flex flex-col overflow-y-auto min-w-0">
+              <header className="h-16 lg:h-20 border-b border-[#F5F5F0]/10 flex items-center justify-between px-4 sm:px-6 lg:px-10 shrink-0 bg-[#0A0A0A]/95 backdrop-blur-sm sticky top-0 z-30">
+                {/* Tabs Navigation */}
+                <nav className="flex items-center gap-1 sm:gap-2 md:gap-3 lg:gap-5 h-full overflow-x-auto no-scrollbar min-w-0 flex-1 mr-2 sm:mr-4">
                   {[
-                    { id: 'map', label: 'Semantic Map' },
-                    { id: 'landscape', label: 'Landscape' },
-                    { id: 'blueprint', label: 'Narrative Blueprint' }
+                    { id: 'map', label: 'Semantic Map', tip: 'Radar & Strategic Gaps', icon: <Target size={11} className={activeTab === 'map' ? "text-[#C5FF4A]" : "opacity-60"} /> },
+                    { id: 'entityGraph', label: 'Entity Graph', tip: 'KG Salience & Nodes', icon: <Network size={11} className={activeTab === 'entityGraph' ? "text-[#C5FF4A]" : "opacity-60"} /> },
+                    { id: 'serp', label: 'SERP Targets', tip: 'AI Overviews & Position 0', icon: <Sparkles size={11} className={activeTab === 'serp' ? "text-[#C5FF4A]" : "opacity-60"} /> },
+                    { id: 'landscape', label: 'Landscape', tip: 'Temporal Trends & Velocity', icon: <TrendingUp size={11} className={activeTab === 'landscape' ? "text-[#C5FF4A]" : "opacity-60"} /> },
+                    { id: 'competitor', label: 'Competitor Gaps', tip: 'Domain Blind Spots', icon: <Swords size={11} className={activeTab === 'competitor' ? "text-[#C5FF4A]" : "opacity-60"} /> },
+                    { id: 'blueprint', label: 'Narrative Blueprint', tip: 'H1/H2 Editorial Plan', icon: <Layers size={11} className={activeTab === 'blueprint' ? "text-[#C5FF4A]" : "opacity-60"} /> }
                   ].map(tab => (
-                    <button 
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id as any)}
-                      className={cn(
-                        "h-full px-2 lg:px-4 text-[9px] lg:text-[10px] uppercase tracking-widest font-bold transition-all border-b-2 whitespace-nowrap",
-                        activeTab === tab.id ? "text-[#C5FF4A] border-[#C5FF4A]" : "opacity-40 border-transparent hover:opacity-100"
-                      )}
-                    >
-                      {tab.label}
-                    </button>
+                    <NavTooltip key={tab.id} content={tab.label} tip={tab.tip}>
+                      <button 
+                        onClick={() => setActiveTab(tab.id as any)}
+                        className={cn(
+                          "h-full px-2 sm:px-3 lg:px-4 text-[9px] lg:text-[10px] uppercase tracking-wider lg:tracking-widest font-bold transition-all border-b-2 whitespace-nowrap flex items-center gap-1.5 cursor-pointer select-none",
+                          activeTab === tab.id ? "text-[#C5FF4A] border-[#C5FF4A]" : "text-white/40 border-transparent hover:text-white hover:border-white/20"
+                        )}
+                      >
+                        {tab.icon}
+                        <span>{tab.label}</span>
+                        {tab.id === 'competitor' && (analysis.competitorAudit || analysis.competitor) && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#C5FF4A]" />
+                        )}
+                      </button>
+                    </NavTooltip>
                   ))}
+                </nav>
+
+                {/* Right Side Actions: Quick Tips, Operator's Guide, Vector ID */}
+                <div className="flex items-center gap-2 sm:gap-3 shrink-0 whitespace-nowrap pl-2 border-l border-white/10">
+                  <QuickTipsPopover onOpenGuide={() => setIsGuideOpen(true)} />
+
+                  <NavTooltip content="Complete Doctrine & Scoring Playbook" tip="Open Guide">
+                    <button
+                      onClick={() => setIsGuideOpen(true)}
+                      className="text-[9px] font-mono text-[#C5FF4A] hover:bg-[#C5FF4A]/10 border border-[#C5FF4A]/30 px-2.5 sm:px-3 py-1.5 flex items-center gap-1.5 uppercase transition-all cursor-pointer whitespace-nowrap"
+                    >
+                      <BookOpen size={11} className="shrink-0" />
+                      <span className="hidden md:inline">Operator's Guide</span>
+                      <span className="md:hidden">Guide</span>
+                    </button>
+                  </NavTooltip>
+
+                  <div className="hidden xl:flex items-center gap-1.5 text-[9px] opacity-40 font-mono whitespace-nowrap pl-1">
+                    <span>VECTOR_ID:</span>
+                    <span className="text-white/70 font-semibold">{analysis.id.substring(0,8).toUpperCase()}</span>
+                  </div>
                 </div>
-                <div className="hidden md:block text-[9px] opacity-40 font-mono">VECTOR_ID: {analysis.id.substring(0,8).toUpperCase()}</div>
               </header>
 
               <div className="p-6 lg:p-12 space-y-12 lg:space-y-16">
@@ -623,13 +808,38 @@ export default function App() {
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-12">
                     {/* Elaborate Listicle Gaps */}
                     <div className="space-y-6">
-                      <div className="flex justify-between items-end border-b border-[#F5F5F0]/10 pb-2">
-                        <label className="text-[10px] uppercase tracking-widest opacity-50 block">Strategic Gaps</label>
-                        <span className="text-[9px] font-mono opacity-30 italic">Click node to expand tactical metadata</span>
+                      <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-[#F5F5F0]/10 pb-3 gap-2">
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest opacity-50 block">Strategic Gaps</label>
+                          <span className="text-[9px] font-mono opacity-30 italic">Click node to expand tactical metadata</span>
+                        </div>
+                        {/* Archetype Filter Pills */}
+                        <div className="flex flex-wrap items-center gap-1">
+                          {['All', 'Entity Co-occurrence', 'Latent User Need', 'Empirical Evidence', 'SERP Feature Gap', 'Contrarian Angle'].map((type) => (
+                            <button
+                              key={type}
+                              onClick={() => setGapTypeFilter(type)}
+                              className={cn(
+                                "px-2 py-0.5 text-[8px] uppercase tracking-wider font-mono transition-all cursor-pointer",
+                                gapTypeFilter === type
+                                  ? "bg-[#C5FF4A] text-black font-bold"
+                                  : "text-white/40 hover:text-white border border-white/5"
+                              )}
+                            >
+                              {type === 'Entity Co-occurrence' ? 'Entity' : 
+                               type === 'Latent User Need' ? 'Latent Need' :
+                               type === 'Empirical Evidence' ? 'Empirical' :
+                               type === 'SERP Feature Gap' ? 'SERP' :
+                               type === 'Contrarian Angle' ? 'Contrarian' : 'All'}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                       
                       <div className="space-y-4 max-h-[700px] overflow-y-auto pr-2 custom-scrollbar">
-                        {analysis.semanticGaps.map((gap, i) => {
+                        {analysis.semanticGaps
+                          .filter(gap => gapTypeFilter === 'All' || gap.gapType === gapTypeFilter)
+                          .map((gap, i) => {
                           const isActive = selectedGapIndex === i;
                           return (
                             <motion.div 
@@ -648,7 +858,19 @@ export default function App() {
                               )}
                               
                               <div className="flex justify-between items-start mb-4">
-                                <div>
+                                <div className="space-y-1">
+                                   <div className="flex flex-wrap items-center gap-1.5">
+                                     {gap.gapType && (
+                                       <span className="text-[7px] uppercase font-mono tracking-widest px-1.5 py-0.5 border border-white/10 bg-black/40 text-white/60">
+                                         {gap.gapType}
+                                       </span>
+                                     )}
+                                     {gap.serpTarget && (
+                                       <span className="text-[7px] uppercase font-mono tracking-widest px-1.5 py-0.5 bg-[#C5FF4A]/10 text-[#C5FF4A] border border-[#C5FF4A]/20">
+                                         {gap.serpTarget}
+                                       </span>
+                                     )}
+                                   </div>
                                    <h3 className={cn(
                                      "text-xl font-serif italic transition-colors",
                                      isActive ? "text-[#C5FF4A]" : "text-white group-hover:text-[#C5FF4A]/80"
@@ -681,6 +903,14 @@ export default function App() {
                                   animate={{ opacity: 1, height: 'auto' }}
                                   className="pt-4 border-t border-[#C5FF4A]/20 mt-4 space-y-4"
                                 >
+                                   {gap.searchIntentNuance && (
+                                     <div className="p-2.5 bg-black/40 border border-white/5">
+                                       <div className="text-[8px] text-white/40 uppercase tracking-widest font-mono mb-1">Search Intent Nuance</div>
+                                       <div className="text-[11px] font-light leading-relaxed text-white/80">
+                                         {gap.searchIntentNuance}
+                                       </div>
+                                     </div>
+                                   )}
                                    <div>
                                       <div className="text-[9px] text-[#C5FF4A] uppercase tracking-widest font-bold mb-2 font-mono">Tactical_Directive</div>
                                       <div className="text-[11px] font-light leading-relaxed opacity-70 italic mb-4">
@@ -712,7 +942,7 @@ export default function App() {
                         <span className="text-[9px] font-mono opacity-30 italic">Interactive Analysis Radar</span>
                       </div>
                       
-                      <div className="h-[450px] md:h-[600px] border border-[#F5F5F0]/10 p-8 flex items-center justify-center bg-zinc-950/30 relative group">
+                      <div ref={radarChartRef} className="h-[450px] md:h-[600px] border border-[#F5F5F0]/10 p-8 flex items-center justify-center bg-zinc-950/30 relative group">
                         <div className="absolute inset-0 opacity-10 pointer-events-none overflow-hidden">
                            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,#C5FF4A_1px,transparent_1px)] bg-[size:40px_40px]" />
                         </div>
@@ -787,6 +1017,20 @@ export default function App() {
                       </div>
                     </div>
                   </div>
+                )}
+
+                {activeTab === 'entityGraph' && (
+                  <EntityGraphVisualizer
+                    entityGraph={analysis.entityGraph}
+                    keyword={analysis.keyword}
+                  />
+                )}
+
+                {activeTab === 'serp' && (
+                  <SERPOpportunityMatrix
+                    serpOpportunities={analysis.serpOpportunities}
+                    keyword={analysis.keyword}
+                  />
                 )}
 
                 {activeTab === 'landscape' && (
@@ -894,6 +1138,15 @@ export default function App() {
                   </div>
                 )}
 
+                {activeTab === 'competitor' && (
+                  <CompetitorGapChecker
+                    keyword={analysis.keyword}
+                    initialCompetitor={analysis.competitor || ''}
+                    competitorAudit={analysis.competitorAudit}
+                    onAuditUpdated={handleCompetitorAuditUpdated}
+                  />
+                )}
+
                 {activeTab === 'blueprint' && (
                   <div className="space-y-6">
                     <label className="text-[10px] uppercase tracking-widest opacity-50 border-b border-[#F5F5F0]/10 pb-2 block">Narrative Architecture</label>
@@ -929,6 +1182,12 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Operator's Guide Modal */}
+      <MethodologyGuideModal 
+        isOpen={isGuideOpen} 
+        onClose={() => setIsGuideOpen(false)} 
+      />
     </div>
   );
 }

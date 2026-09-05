@@ -2,5 +2,5 @@
   "name": "Nexus SEO: Semantic Gap Engine",
   "description": "Revolutionary SEO tool that identifies 'Semantic Gaps' and 'Information Gain' opportunities to help you create content that uniquely ranks by out-reasoning the competition, not just out-shouting them.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
