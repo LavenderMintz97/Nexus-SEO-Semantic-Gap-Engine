@@ -6,7 +6,7 @@
 
 This contains everything you need to run your app locally.
 
-View your app in AI Studio: https://ai.studio/apps/16abd6fc-3390-4bb4-9cbb-c75fe196f525
+View your app in AI Studio: https://nexus-seo-semantic-gap-engine.ai.studio
 
 ## Run Locally
 
